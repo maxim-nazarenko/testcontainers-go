@@ -138,11 +138,33 @@ func (c *DockerContainer) MappedPort(ctx context.Context, port nat.Port) (nat.Po
 
 // Ports gets the exposed ports for the container.
 func (c *DockerContainer) Ports(ctx context.Context) (nat.PortMap, error) {
-	inspect, err := c.inspectContainer(ctx)
-	if err != nil {
-		return nil, err
+	allPortsPopulated := func(bindingDefinition nat.PortMap, actualBinding nat.PortMap) bool {
+		for p := range bindingDefinition {
+			// port from definition is listed in  bindings
+			// and is not populated
+			// (if port is not mapped to host, actualBindings["111/tcp"] would bi nil)
+			if v, ok := actualBinding[p]; ok && v != nil && len(v) == 0 {
+				return false
+			}
+		}
+		return true
 	}
-	return inspect.NetworkSettings.Ports, nil
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+			// do not use internal inspect() function since it caches the first response
+			inspect, err := c.provider.client.ContainerInspect(ctx, c.ID)
+			if err != nil {
+				return nil, err
+			}
+			if allPortsPopulated(inspect.HostConfig.PortBindings, inspect.NetworkSettings.Ports) {
+				return inspect.NetworkSettings.Ports, nil
+			}
+		}
+	}
 }
 
 // SessionID gets the current session id
